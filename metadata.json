@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Coletor B2BR V3",
+  "description": "Secure B2B Client Portal \u0026 Order Catalog integrated with Omie ERP services, designed for deployment on high-reliability Google Cloud",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

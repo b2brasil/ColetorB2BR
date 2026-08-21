@@ -1,0 +1,31 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default match
+    match /{document=**} {
+      allow read, write: if true;
+    }
+
+    // Collection 1: Email Verification Codes
+    match /email_verification_codes/{email} {
+      allow read, write: if true;
+    }
+
+    // Collection 2: Seller Credentials
+    match /seller_credentials/{email} {
+      allow read, write: if true;
+    }
+
+    // Collection 3: Seller Phones
+    match /seller_phones/{sellerCode} {
+      allow read, write: if true;
+    }
+
+    // Collection 3: test_connection
+    match /test_connection/{document} {
+      allow read, write: if true;
+    }
+  }
+}
+

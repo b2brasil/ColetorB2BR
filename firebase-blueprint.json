@@ -1,0 +1,107 @@
+{
+  "entities": {
+    "SellerCredentials": {
+      "title": "Seller Credentials",
+      "description": "Securely stored credential hashes and salts for Omie ERP sellers",
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string",
+          "description": "SHA-512 pbkdf2 password hash"
+        },
+        "salt": {
+          "type": "string",
+          "description": "Cryptographic salt value"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when credentials were last updated"
+        }
+      },
+      "required": ["hash", "salt", "updatedAt"]
+    },
+    "EmailVerificationCode": {
+      "title": "Email Verification Code",
+      "description": "Temporary 6-digit verification codes for secure password setup",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "The normalized email address to verify"
+        },
+        "code": {
+          "type": "string",
+          "description": "6-digit OTP code"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Code expiration timestamp"
+        },
+        "verified": {
+          "type": "boolean",
+          "description": "Whether the code was verified successfully"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Code generation timestamp"
+        }
+      },
+      "required": ["email", "code", "expiresAt", "verified", "createdAt"]
+    },
+    "SellerPhone": {
+      "title": "Seller Phone Binding",
+      "description": "Linked WhatsApp phone number mapping for Omie ERP sellers",
+      "type": "object",
+      "properties": {
+        "codigo_vendedor": {
+          "type": "number",
+          "description": "Omie ERP seller code"
+        },
+        "nome": {
+          "type": "string",
+          "description": "Seller full name"
+        },
+        "email": {
+          "type": "string",
+          "description": "Seller email"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Formatted phone number (e.g. (11) 99988-7766)"
+        },
+        "phoneDigits": {
+          "type": "string",
+          "description": "Normalized phone number with digits only"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Admin email who updated the binding"
+        }
+      },
+      "required": ["codigo_vendedor", "nome", "email", "phone", "phoneDigits", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/seller_phones/{sellerCode}": {
+      "schema": "SellerPhone",
+      "description": "Linked phone numbers for WhatsApp sellers"
+    },
+    "/seller_credentials/{email}": {
+      "schema": "SellerCredentials",
+      "description": "Credentials of Omie ERP sellers"
+    },
+    "/email_verification_codes/{email}": {
+      "schema": "EmailVerificationCode",
+      "description": "Temporary email verification tokens"
+    }
+  }
+}
