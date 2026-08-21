@@ -189,6 +189,21 @@ let cachedCategoryCode: string | null = null;
 let cachedPaymentTerms: { code: string; description: string }[] | null = null;
 let cachedCenariosImpostos: { codigo: number; descricao: string; padrao?: boolean }[] | null = null;
 
+// Safe JSON parser helper to prevent "Unexpected token '<', <!doctype... is not valid JSON"
+export async function safeJson<T = any>(res: Response | null | undefined): Promise<T | null> {
+  if (!res) return null;
+  try {
+    const text = await res.text();
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      return JSON.parse(trimmed) as T;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // Robust Rate-Limiting Retry Helper for Omie APIs (especially to solve MISUSE_API_PROCESS / HTTP 500 / 429 / Timeouts)
 const fetchOmieWithRetry = async (url: string, init: RequestInit, maxRetries = 2, delayMs = 300, timeoutMs = 15000): Promise<Response> => {
   let attempt = 0;
@@ -407,18 +422,20 @@ export async function GET(req: NextRequest) {
       });
 
       if (res.ok) {
-        const data = await res.json();
-        console.log('Omie characteristics response structure:', JSON.stringify(data));
-        
-        let caracteristicas = data.caracteristicas || [];
-        if (!caracteristicas.length && data.caracteristicas_cliente) {
-          caracteristicas = data.caracteristicas_cliente;
+        const data = await safeJson(res);
+        if (data) {
+          console.log('Omie characteristics response structure:', JSON.stringify(data));
+          
+          let caracteristicas = data.caracteristicas || [];
+          if (!caracteristicas.length && data.caracteristicas_cliente) {
+            caracteristicas = data.caracteristicas_cliente;
+          }
+          
+          const redeCaract = caracteristicas.find((c: any) => 
+            String(c.campo || '').toLowerCase().trim() === 'rede'
+          );
+          return NextResponse.json({ rede: redeCaract ? redeCaract.conteudo : "" });
         }
-        
-        const redeCaract = caracteristicas.find((c: any) => 
-          String(c.campo || '').toLowerCase().trim() === 'rede'
-        );
-        return NextResponse.json({ rede: redeCaract ? redeCaract.conteudo : "" });
       } else {
         console.warn('Omie API characteristics request returned non-OK status:', res.status);
       }
@@ -567,8 +584,8 @@ export async function GET(req: NextRequest) {
       });
 
       if (sellersRes.ok) {
-        const sellersData = await sellersRes.json();
-        const sellersList = sellersData.vendedoresCadastro || sellersData.cadastro || sellersData.vendedores || [];
+        const sellersData = await safeJson(sellersRes);
+        const sellersList = sellersData?.vendedoresCadastro || sellersData?.cadastro || sellersData?.vendedores || [];
         if (Array.isArray(sellersList)) {
           const activeSellers = sellersList.map((item: any) => ({
             codigo_vendedor: Number(item.codigo || item.codigo_vendedor || item.cod_vendedor || 0),
@@ -623,8 +640,8 @@ export async function GET(req: NextRequest) {
             })
           });
           if (resClients.ok) {
-            const dClients = await resClients.json();
-            const list = dClients.clientes_cadastro || [];
+            const dClients = await safeJson(resClients);
+            const list = dClients?.clientes_cadastro || [];
             for (const c of list) {
               const d = c.dados_cadastrais || {};
               const code = c.codigo_cliente_omie || c.codigo_cliente || d.codigo_cliente_omie || d.codigo_cliente;
@@ -686,9 +703,11 @@ export async function GET(req: NextRequest) {
           break;
         }
 
-        const dataOrders = await resOrders.json();
-        if (dataOrders.faultstring) {
-          console.error(`[Sync Orders] Fault on page ${currentPage}: ${dataOrders.faultstring}`);
+        const dataOrders = await safeJson(resOrders);
+        if (!dataOrders || dataOrders.faultstring) {
+          if (dataOrders?.faultstring) {
+            console.error(`[Sync Orders] Fault on page ${currentPage}: ${dataOrders.faultstring}`);
+          }
           break;
         }
 
@@ -774,7 +793,8 @@ export async function GET(req: NextRequest) {
             mode: 'live',
             status: orderStatus,
             omieId: String(cab.codigo_pedido || ''),
-            orderNumber: String(cab.numero_pedido || '')
+            orderNumber: String(cab.numero_pedido || ''),
+            numero_pedido_cliente: String(cab.numero_pedido_cliente || info.numero_pedido_cliente || '').trim()
           };
         });
 
@@ -850,7 +870,7 @@ export async function GET(req: NextRequest) {
         });
 
         if (resStatus.ok) {
-          const rawDataStatus = await resStatus.json();
+          const rawDataStatus = await safeJson(resStatus);
           const d = rawDataStatus?.pedido_status || rawDataStatus;
           if (d && !d.faultstring && (d.etapa || d.etapa_pedido)) {
             statusData = d;
@@ -878,7 +898,7 @@ export async function GET(req: NextRequest) {
         });
 
         if (res.ok) {
-          const rawData = await res.json();
+          const rawData = await safeJson(res);
           const d = rawData?.pedido_venda_produto || rawData;
           if (d && d.cabecalho) {
             // We got the order details! Now, let's use the real codigo_pedido to get StatusPedido details (especially ListaNfe)
@@ -898,7 +918,7 @@ export async function GET(req: NextRequest) {
               });
 
               if (resSecondStatus.ok) {
-                const rawSecond = await resSecondStatus.json();
+                const rawSecond = await safeJson(resSecondStatus);
                 const secondD = rawSecond?.pedido_status || rawSecond;
                 if (secondD && !secondD.faultstring && (secondD.etapa || secondD.etapa_pedido)) {
                   statusData = secondD;
@@ -1700,8 +1720,8 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify(payload)
         });
         if (res.ok) {
-          const data = await res.json();
-          const list = data.clientes_cadastro || data.clientes_cadastro_resumido || [];
+          const data = await safeJson(res);
+          const list = data?.clientes_cadastro || data?.clientes_cadastro_resumido || [];
           if (list.length > 0) {
             const item = list[0];
             const d = item.dados_cadastrais || {};
@@ -1754,9 +1774,9 @@ export async function POST(req: NextRequest) {
               body: JSON.stringify(payload)
             });
 
-            let data: any = {};
+            let data: any = null;
             if (res.ok) {
-              data = await res.json();
+              data = await safeJson(res);
             } else {
               // Try fallback to ListarClientesResumido
               payload.call = 'ListarClientesResumido';
@@ -1766,7 +1786,7 @@ export async function POST(req: NextRequest) {
                 body: JSON.stringify(payload)
               });
               if (res.ok) {
-                data = await res.json();
+                data = await safeJson(res);
               }
             }
 
@@ -1881,10 +1901,12 @@ export async function POST(req: NextRequest) {
     const obsCobraDescarga = orderData.cobraDescarga || 'Não';
     const obsDataAgendada = orderData.dataAgendada || 'Não';
     const rawDeliveryInstructions = orderData.deliveryInstructions || '';
+    const rawNumeroPedidoCliente = String(orderData.numero_pedido_cliente || orderData.numeroPedidoCliente || '').trim();
     
     const termName = orderData.paymentTerm || 'Boleto - 30 Dias Líquidos';
     const combinedInstructions = [
       `Condição de Pagamento: ${termName}`,
+      rawNumeroPedidoCliente ? `Nº Pedido Cliente: ${rawNumeroPedidoCliente}` : '',
       `Cliente cobra descarga: ${obsCobraDescarga}`,
       `Entrega com data agendada: ${obsDataAgendada}`,
       rawDeliveryInstructions ? `Observações: ${rawDeliveryInstructions}` : ''
@@ -1907,8 +1929,8 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify(payload)
         });
         if (res.ok) {
-          const data = await res.json() as any;
-          const list = data.cadastros || data.forma_pagamento_cadastro || data.formas_pagamento || data.forma_pagamento || data.registros || [];
+          const data = await safeJson(res);
+          const list = data?.cadastros || data?.forma_pagamento_cadastro || data?.formas_pagamento || data?.forma_pagamento || data?.registros || [];
           if (Array.isArray(list) && list.length > 0) {
             cachedPaymentTerms = list
               .map((f: any) => {
@@ -2017,8 +2039,8 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify(contaPayload)
         });
         if (contaRes.ok) {
-          const contaData = await contaRes.json();
-          const contas = contaData.ListarContasCorrentes || contaData.registros || [];
+          const contaData = await safeJson(contaRes);
+          const contas = contaData?.ListarContasCorrentes || contaData?.registros || [];
           const matchCASH = contas.find((acc: any) => acc && String(acc.descricao || '').trim().toLowerCase().includes('cash'));
           const matchBanco = contas.find((acc: any) => acc && !String(acc.descricao || '').toLowerCase().includes('caixa'));
           const anyAccount = contas[0];
@@ -2054,8 +2076,8 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify(catPayload)
         });
         if (catRes.ok) {
-          const catData = await catRes.json();
-          const cats = catData.categoria_cadastro || catData.ListarCategorias || catData.registros || [];
+          const catData = await safeJson(catRes);
+          const cats = catData?.categoria_cadastro || catData?.ListarCategorias || catData?.registros || [];
           // Filtrar apenas categorias de receitas que estejam ativas (conta_inativa !== 'S') e que não sejam apenas totalizadoras (totalizadora !== 'S')
           const activeCats = cats.filter((c: any) => c && c.conta_inativa !== 'S' && c.totalizadora !== 'S');
           
@@ -2109,8 +2131,8 @@ export async function POST(req: NextRequest) {
       });
       
       if (sellersRes.ok) {
-        const sellersData = await sellersRes.json();
-        const sellersList = sellersData.vendedoresCadastro || sellersData.cadastro || sellersData.vendedores || [];
+        const sellersData = await safeJson(sellersRes);
+        const sellersList = sellersData?.vendedoresCadastro || sellersData?.cadastro || sellersData?.vendedores || [];
         if (Array.isArray(sellersList) && sellersList.length > 0) {
           const activeSellers = sellersList.map((item: any) => ({
             codigo_vendedor: Number(item.codigo || item.codigo_vendedor || item.cod_vendedor || 0),
@@ -2233,6 +2255,7 @@ export async function POST(req: NextRequest) {
             codigo_conta_corrente: resolvedContaCorrenteId,
             consumidor_final: "N",
             enviar_email: "N",
+            ...(rawNumeroPedidoCliente ? { numero_pedido_cliente: rawNumeroPedidoCliente } : {}),
             ...(resolvedVendedorCodigo ? { codVend: Number(resolvedVendedorCodigo) } : {}),
             ...(resolvedCenarioImpostos ? { codigo_cenario_impostos: resolvedCenarioImpostos } : {})
           },
@@ -2257,28 +2280,32 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify(omiePayload)
       });
 
-      if (omieRes.ok) {
-        const resData = await omieRes.json();
-        if (resData && resData.faultstring) {
-          lastPostError = `${resData.faultstring} (Error ${resData.faultcode || 'JSON-RPC Fault'})`;
+      const resText = await omieRes.text().catch(() => '');
+      let resData: any = null;
+      try {
+        const trimmed = resText.trim();
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          resData = JSON.parse(trimmed);
+        }
+      } catch {}
+
+      if (omieRes.ok && resData) {
+        if (resData.faultstring) {
+          lastPostError = `${resData.faultstring} (Código: ${resData.faultcode || 'JSON-RPC Fault'})`;
         } else {
           responseData = resData;
           postOk = true;
         }
       } else {
-        // High-fidelity extraction of validation messages from Omie HTTP errors
-        let errorDetails = '';
-        try {
-          const errorJson = await omieRes.clone().json();
-          if (errorJson && errorJson.faultstring) {
-            errorDetails = `${errorJson.faultstring} (Código: ${errorJson.faultcode || 'N/A'})`;
-          } else {
-            errorDetails = JSON.stringify(errorJson);
-          }
-        } catch {
-          errorDetails = await omieRes.text().catch(() => 'Erro indefinido de status HTTP');
+        if (resData && resData.faultstring) {
+          lastPostError = `${resData.faultstring} (Código: ${resData.faultcode || 'N/A'})`;
+        } else if (resData) {
+          lastPostError = JSON.stringify(resData);
+        } else if (resText.includes('<!doctype') || resText.includes('<html')) {
+          lastPostError = `O gateway Omie ERP retornou uma página intermediária de erro (HTTP ${omieRes.status}). O serviço do Omie pode estar instável ou sobrecarregado no momento.`;
+        } else {
+          lastPostError = `HTTP ${omieRes.status} em ${targetEndpoint}: ${resText.slice(0, 200) || 'Sem resposta do servidor'}`;
         }
-        lastPostError = `HTTP ${omieRes.status} em ${targetEndpoint}: ${errorDetails}`;
       }
     } catch (err: any) {
       lastPostError = `Exceção de conexão em rede: ${err.message}`;

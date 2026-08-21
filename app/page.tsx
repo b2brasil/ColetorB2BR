@@ -442,6 +442,7 @@ export default function Home() {
   const [paymentDropdownOpen, setPaymentDropdownOpen] = useState(false);
   const [paymentSearch, setPaymentSearch] = useState('');
   const [deliveryInstructions, setDeliveryInstructions] = useState('');
+  const [numeroPedidoCliente, setNumeroPedidoCliente] = useState('');
   const [cobraDescarga, setCobraDescarga] = useState<'Sim' | 'Não'>('Não');
   const [dataAgendada, setDataAgendada] = useState<'Sim' | 'Não'>('Não');
   const [freightModality, setFreightModality] = useState<string>('0');
@@ -549,8 +550,12 @@ export default function Home() {
 
       const res = await fetch(`/api/omie?${params.toString()}`);
       if (res.ok) {
-        const data = await res.json();
-        if (data.status === 'success') {
+        const rawText = await res.text().catch(() => '');
+        let data: any = null;
+        try {
+          data = JSON.parse(rawText);
+        } catch {}
+        if (data && data.status === 'success') {
           setOrderStatuses(prev => ({
             ...prev,
             [orderId]: {
@@ -563,7 +568,7 @@ export default function Home() {
           }));
           return;
         } else {
-          throw new Error(data.message || 'Falha ao recuperar status do Omie');
+          throw new Error(data?.message || 'Falha ao recuperar status do Omie');
         }
       }
       throw new Error('Falha na resposta do servidor.');
@@ -598,8 +603,14 @@ export default function Home() {
       try {
         const res = await fetch(`/api/omie?action=characteristics&codigo=${client.codigo_cliente_omie}`);
         if (res.ok) {
-          const data = await res.json();
-          setDetailedClient(prev => prev && prev.codigo_cliente_omie === client.codigo_cliente_omie ? { ...prev, rede: data.rede } : prev);
+          const rawText = await res.text().catch(() => '');
+          let data: any = null;
+          try {
+            data = JSON.parse(rawText);
+          } catch {}
+          if (data) {
+            setDetailedClient(prev => prev && prev.codigo_cliente_omie === client.codigo_cliente_omie ? { ...prev, rede: data.rede } : prev);
+          }
         }
       } catch (err) {
         console.error('Erro ao buscar características do cliente:', err);
@@ -640,8 +651,12 @@ export default function Home() {
     try {
       const res = await fetch(`/api/omie?action=sync-orders&vendedor=${encodeURIComponent(username)}`);
       if (res.ok) {
-        const data = await res.json();
-        if (data.status === 'success' && Array.isArray(data.orders)) {
+        const rawText = await res.text().catch(() => '');
+        let data: any = null;
+        try {
+          data = JSON.parse(rawText);
+        } catch {}
+        if (data && data.status === 'success' && Array.isArray(data.orders)) {
           setOrdersHistory((prevHistory) => {
             const merged = [...prevHistory];
             for (const newOrd of data.orders) {
@@ -1240,6 +1255,8 @@ export default function Home() {
         })),
         deliveryDate,
         deliveryInstructions,
+        numero_pedido_cliente: numeroPedidoCliente,
+        numeroPedidoCliente,
         cobraDescarga,
         dataAgendada,
         paymentTerm,
@@ -1258,6 +1275,7 @@ export default function Home() {
       
       setIntegrationError(null);
       setCart([]);
+      setNumeroPedidoCliente('');
       alert('Pedido salvo no Histórico de Pedidos com sucesso! Você poderá re-transmitir futuramente quando a API do Omie expirar o bloqueio temporário.');
     } catch (err) {
       console.error('Erro ao salvar no histórico local de contingência:', err);
@@ -1300,6 +1318,8 @@ export default function Home() {
           })),
           deliveryDate,
           deliveryInstructions,
+          numero_pedido_cliente: numeroPedidoCliente,
+          numeroPedidoCliente,
           cobraDescarga,
           dataAgendada,
           paymentTerm,
@@ -1308,7 +1328,26 @@ export default function Home() {
         })
       });
 
-      const data = await res.json();
+      const rawText = await res.text().catch(() => '');
+      let data: any = null;
+      try {
+        const trimmed = rawText.trim();
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          data = JSON.parse(trimmed);
+        }
+      } catch {}
+
+      if (!data) {
+        const isHtml = rawText.includes('<!doctype') || rawText.includes('<html');
+        setIntegrationError({
+          status: 'error',
+          message: isHtml 
+            ? `O gateway Omie ERP ou proxy demorou para responder (HTTP ${res.status}). Por favor, tente novamente em instantes.`
+            : `Resposta inesperada do servidor (${res.status}): ${rawText.slice(0, 200) || 'Sem conteúdo'}`,
+          note: 'Erro de Comunicação'
+        });
+        return;
+      }
       
       if (!res.ok || data.status === 'error') {
         setIntegrationError(data);
@@ -1364,6 +1403,8 @@ export default function Home() {
           })),
           deliveryDate,
           deliveryInstructions,
+          numero_pedido_cliente: numeroPedidoCliente,
+          numeroPedidoCliente,
           cobraDescarga,
           dataAgendada,
           paymentTerm,
@@ -2820,6 +2861,21 @@ export default function Home() {
                       </div>
 
                       <div className="space-y-1">
+                        <label className="block text-[11px] font-bold text-[#444941]">Número do Pedido do Cliente</label>
+                        <input
+                          type="text"
+                          placeholder="Ex: PO-98421, PED-1234..."
+                          value={numeroPedidoCliente}
+                          onChange={(e) => setNumeroPedidoCliente(e.target.value)}
+                          className="w-full bg-[#f8faf8] border border-[#c2c9bc] focus:border-primary focus:ring-1 focus:ring-primary rounded-xl p-3 text-xs font-mono font-bold text-[#1a1c19] focus:outline-none placeholder:font-sans placeholder:font-normal placeholder:text-[#8d9289] transition-all"
+                        />
+                        <p className="text-[10.5px] text-[#555e51] font-medium flex items-center gap-1.5 pt-0.5">
+                          <FileText size={12} className="text-primary shrink-0" />
+                          <span>Este número será impresso na <strong>Nota Fiscal</strong> (DANFE).</span>
+                        </p>
+                      </div>
+
+                      <div className="space-y-1">
                         <label className="block text-[11px] font-bold text-[#444941]">Observações</label>
                         <textarea
                           rows={2}
@@ -3577,6 +3633,12 @@ export default function Home() {
                                     <DollarSign size={14} className="text-primary" /> Faturamento Comercial
                                   </h6>
                                   <div className="space-y-1.5 text-[#444941]">
+                                    {(order.numero_pedido_cliente || order.numeroPedidoCliente) && (
+                                      <p className="flex justify-between">
+                                        <span>Nº Pedido Cliente:</span>
+                                        <strong className="text-primary font-mono font-bold">{order.numero_pedido_cliente || order.numeroPedidoCliente}</strong>
+                                      </p>
+                                    )}
                                     <p className="flex justify-between"><span>Condição de pagamento:</span> <strong className="text-[#1a1c19] font-medium">{order.paymentTerm || 'Boleto - 30 Dias Líquidos'}</strong></p>
                                     <p className="flex justify-between"><span>Vendedor Responsável:</span> <strong className="text-primary font-bold">{order.vendedor}</strong></p>
                                     {order.orderNumber && (
@@ -3714,6 +3776,7 @@ export default function Home() {
                                       setCart(itemsToLoad);
                                       setDeliveryDate(order.deliveryDate || getTodayDateString());
                                       setDeliveryInstructions(order.deliveryInstructions || '');
+                                      setNumeroPedidoCliente(order.numero_pedido_cliente || order.numeroPedidoCliente || '');
                                       setCobraDescarga(order.cobraDescarga || 'Não');
                                       setDataAgendada(order.dataAgendada || 'Não');
                                       setPaymentTerm(order.paymentTerm || 'Boleto - 30 Dias Líquidos');
@@ -4124,6 +4187,9 @@ export default function Home() {
                 <h4 className="font-sans font-bold text-[#1a1c19] border-b border-[#edf2ec] pb-1.5 uppercase text-[10px] tracking-wider text-primary">Detalhamento Logístico</h4>
                 <div className="space-y-1.5 font-mono text-[11px] text-[#444941]">
                   <p className="flex justify-between"><span>Controle local:</span> <strong className="text-[#1a1c19] font-black">{submittedResponse?.clientOrderNumber || 'ORD-2026-OMIE'}</strong></p>
+                  {numeroPedidoCliente && (
+                    <p className="flex justify-between"><span>Nº Pedido Cliente:</span> <strong className="text-primary font-bold">{numeroPedidoCliente}</strong></p>
+                  )}
                   <p className="flex justify-between"><span>Número Omie:</span> <strong className="text-primary font-bold">{(submittedResponse?.orderNumber || 'Pendente / Autogerado').replace(/^0+/, '') || '0'}</strong></p>
                   <p className="flex justify-between"><span>Vendedor:</span> <strong className="text-[#1a1c19] font-bold truncate max-w-[150px]" title={username}>{username}</strong></p>
                   <p className="flex justify-between"><span>Previsão Carga:</span> <strong className="text-[#1a1c19] font-bold">{deliveryDate}</strong></p>
@@ -4393,13 +4459,6 @@ export default function Home() {
                 {zoomModalProduct.unitPrice > 0 && (
                   <span className="bg-primary/10 px-2.5 py-1 rounded-lg font-mono font-bold text-primary text-[11px]">
                     Tabela: {formatBrl(zoomModalProduct.unitPrice)}
-                  </span>
-                )}
-                {typeof zoomModalProduct.inventory === 'number' && (
-                  <span className={`px-2.5 py-1 rounded-lg font-mono text-[11px] font-medium ${
-                    zoomModalProduct.inventory > 0 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
-                  }`}>
-                    Estoque: {zoomModalProduct.inventory} {zoomModalProduct.unidade || 'un'}
                   </span>
                 )}
               </div>
