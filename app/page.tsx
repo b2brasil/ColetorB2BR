@@ -44,6 +44,10 @@ import {
   Pencil,
   Check,
   ZoomIn,
+  ZoomOut,
+  RotateCw,
+  Download,
+  ExternalLink,
   Maximize2
 } from 'lucide-react';
 import WhatsAppAgentPanel from '@/components/WhatsAppAgentPanel';
@@ -366,6 +370,60 @@ export default function Home() {
   const [catalogPriceBuffer, setCatalogPriceBuffer] = useState<Record<string, string>>({});
   // Produto selecionado para visualização ampliada/lightbox de imagem
   const [zoomModalProduct, setZoomModalProduct] = useState<Product | null>(null);
+  const [lightboxZoomLevel, setLightboxZoomLevel] = useState<number>(1);
+  const [lightboxRotation, setLightboxRotation] = useState<number>(0);
+  const [productImageSources, setProductImageSources] = useState<Record<string, string>>({});
+
+  // Helper para obter URL segura da imagem (com fallback HTTPS e suporte ao proxy do servidor)
+  const getProductImageSrc = (sku: string, rawUrl?: string): string => {
+    if (productImageSources[sku]) {
+      return productImageSources[sku];
+    }
+    if (!rawUrl) return '';
+    let trimmed = rawUrl.trim();
+    if (trimmed.startsWith('http://')) {
+      trimmed = trimmed.replace('http://', 'https://');
+    }
+    return trimmed;
+  };
+
+  // Helper resiliente para lidar com falhas de imagem e acionar o Image Proxy
+  const handleProductImageError = (sku: string, rawUrl?: string) => {
+    if (!rawUrl) {
+      setProductImageErrors(prev => ({ ...prev, [sku]: true }));
+      return;
+    }
+    const currentSrc = productImageSources[sku] || rawUrl;
+    if (!currentSrc.includes('/api/image-proxy')) {
+      const proxiedUrl = `/api/image-proxy?url=${encodeURIComponent(rawUrl)}`;
+      setProductImageSources(prev => ({ ...prev, [sku]: proxiedUrl }));
+    } else {
+      setProductImageErrors(prev => ({ ...prev, [sku]: true }));
+    }
+  };
+
+  // Listener para atalhos de teclado do Lightbox (Esc para fechar, + / - para zoom)
+  useEffect(() => {
+    if (!zoomModalProduct) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setZoomModalProduct(null);
+        setLightboxZoomLevel(1);
+        setLightboxRotation(0);
+      } else if (e.key === '+' || e.key === '=') {
+        setLightboxZoomLevel(prev => Math.min(prev + 0.25, 3.5));
+      } else if (e.key === '-') {
+        setLightboxZoomLevel(prev => Math.max(prev - 0.25, 0.75));
+      } else if (e.key === '0') {
+        setLightboxZoomLevel(1);
+        setLightboxRotation(0);
+      } else if (e.key.toLowerCase() === 'r') {
+        setLightboxRotation(prev => (prev + 90) % 360);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [zoomModalProduct]);
 
   // Lista de itens no carrinho (pré-preenchida com dados reais de exemplo para facilitar visualização imediata)
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -763,7 +821,7 @@ export default function Home() {
             return sortedTerms[0];
           });
         }
-        
+
         setDiagnostics(data.diagnostics || null);
         setIsLiveMode(data.mode === 'live' && data.status !== 'error');
         
@@ -1235,7 +1293,7 @@ export default function Home() {
             price: item.customPrice,
             codigo_produto: item.product.codigo_produto || item.product.codigo,
             unidade: item.product.unidade || 'UN',
-            cfop: item.product.cfop,
+            cfop: item.product.cfop && item.product.cfop !== '5.102' && item.product.cfop !== '5102' && item.product.cfop.trim() !== '' ? item.product.cfop.trim() : undefined,
             peso_bruto: item.product.peso_bruto,
             peso_liq: item.product.peso_liq,
             peso: item.product.peso
@@ -2184,35 +2242,45 @@ export default function Home() {
                               <div className="flex flex-col md:flex-row gap-6 md:gap-8">
                                 
                                 {/* Imagem do Produto real ("url_imagem") com Zoom Inteligente ao passar o mouse e ao clicar */}
-                                <div className="flex-shrink-0 w-32 h-32 md:w-36 md:h-36 bg-[#f5f7f4] rounded-2xl flex items-center justify-center relative group mx-auto md:mx-0 transition-all hover:bg-[#edf0ec] border border-[#edf0ee]">
+                                <div className="flex-shrink-0 w-32 h-32 md:w-36 md:h-36 bg-[#f5f7f4] rounded-2xl flex items-center justify-center relative group mx-auto md:mx-0 transition-all hover:bg-[#edf0ec] border border-[#edf0ee] shadow-xs">
                                   {p.url_imagem && !productImageErrors[p.sku] ? (
                                     <div 
                                       className="w-full h-full p-2.5 flex items-center justify-center cursor-zoom-in relative overflow-hidden rounded-2xl"
-                                      onClick={() => setZoomModalProduct(p)}
-                                      title="Passe o mouse para ampliar ou clique para ver detalhes em tela cheia"
+                                      onClick={() => {
+                                        setZoomModalProduct(p);
+                                        setLightboxZoomLevel(1);
+                                        setLightboxRotation(0);
+                                      }}
+                                      title="Passe o mouse para ampliar ou clique para ver detalhes em alta resolução"
                                     >
                                       {/* Imagem com transição e zoom suave ao passar o cursor */}
                                       {/* eslint-disable-next-line @next/next/no-img-element */}
                                       <img
-                                        src={p.url_imagem}
+                                        src={getProductImageSrc(p.sku, p.url_imagem)}
                                         alt={p.name}
-                                        className="w-full h-full object-contain transition-transform duration-300 ease-out group-hover:scale-135"
+                                        className="w-full h-full object-contain transition-transform duration-300 ease-out group-hover:scale-135 drop-shadow-xs"
                                         referrerPolicy="no-referrer"
-                                        onError={() => {
-                                          setProductImageErrors(prev => ({ ...prev, [p.sku]: true }));
-                                        }}
+                                        onError={() => handleProductImageError(p.sku, p.url_imagem)}
                                       />
 
                                       {/* Badge de ampliação no hover */}
-                                      <div className="absolute bottom-2 right-2 bg-slate-900/80 backdrop-blur-xs text-white px-2 py-0.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 shadow-sm flex items-center gap-1 text-[10px] font-bold pointer-events-none">
+                                      <div className="absolute bottom-2 right-2 bg-slate-900/85 backdrop-blur-xs text-white px-2 py-0.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 shadow-sm flex items-center gap-1 text-[10px] font-bold pointer-events-none">
                                         <ZoomIn size={11} />
                                         <span>Ampliar</span>
                                       </div>
                                     </div>
                                   ) : (
-                                    <div className="flex flex-col items-center justify-center gap-2 select-none">
+                                    <div 
+                                      className="w-full h-full flex flex-col items-center justify-center gap-2 select-none cursor-pointer p-2 hover:bg-[#ebefe9] transition-colors rounded-2xl"
+                                      onClick={() => {
+                                        setZoomModalProduct(p);
+                                        setLightboxZoomLevel(1);
+                                        setLightboxRotation(0);
+                                      }}
+                                      title="Clique para visualizar a ficha técnica detalhada"
+                                    >
                                       <Package className="w-12 h-12 text-[#8b9385] stroke-[1.25] transition-transform duration-300 group-hover:scale-110" />
-                                      <span className="text-[10px] font-bold text-[#8b9385] uppercase tracking-wider">Sem Imagem</span>
+                                      <span className="text-[10px] font-bold text-[#8b9385] uppercase tracking-wider">Ver Ficha</span>
                                     </div>
                                   )}
                                 </div>
@@ -2519,25 +2587,26 @@ export default function Home() {
                                 <td className="px-6 py-4">
                                   <div className="flex items-center gap-3">
                                     <div 
-                                      className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border overflow-hidden relative group transition-all ${
+                                      className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border overflow-hidden relative group transition-all cursor-zoom-in ${
                                         item.product.url_imagem && !productImageErrors[item.product.sku]
-                                          ? 'bg-white border-[#dce2d8] cursor-zoom-in hover:shadow-md'
-                                          : 'bg-[#edf2ec] text-primary border-[#e5e6e3]'
+                                          ? 'bg-white border-[#dce2d8] hover:shadow-md'
+                                          : 'bg-[#edf2ec] text-primary border-[#e5e6e3] hover:bg-[#e2e7e0]'
                                       }`}
                                       onClick={() => {
-                                        if (item.product.url_imagem && !productImageErrors[item.product.sku]) {
-                                          setZoomModalProduct(item.product);
-                                        }
+                                        setZoomModalProduct(item.product);
+                                        setLightboxZoomLevel(1);
+                                        setLightboxRotation(0);
                                       }}
-                                      title={item.product.url_imagem ? "Passe o mouse ou clique para ampliar" : ""}
+                                      title="Clique para ampliar a imagem e visualizar a ficha técnica"
                                     >
                                       {item.product.url_imagem && !productImageErrors[item.product.sku] ? (
                                         /* eslint-disable-next-line @next/next/no-img-element */
                                         <img
-                                          src={item.product.url_imagem}
+                                          src={getProductImageSrc(item.product.sku, item.product.url_imagem)}
                                           alt={item.product.name}
-                                          className="w-full h-full object-contain p-1 transition-transform duration-300 group-hover:scale-135"
+                                          className="w-full h-full object-contain p-1 transition-transform duration-300 group-hover:scale-135 drop-shadow-xs"
                                           referrerPolicy="no-referrer"
+                                          onError={() => handleProductImageError(item.product.sku, item.product.url_imagem)}
                                         />
                                       ) : (
                                         <Package size={16} />
@@ -3427,17 +3496,56 @@ export default function Home() {
                                       </tr>
                                     </thead>
                                     <tbody className="divide-y divide-[#edf1ed]">
-                                      {order.items?.map((item: any, idx: number) => (
-                                        <tr key={idx} className="hover:bg-[#f8faf8] text-[#1a1c19]">
-                                          <td className="p-3">
-                                            <p className="font-bold">{item.name}</p>
-                                            <p className="font-mono text-[10px] text-[#747970] mt-0.5">{item.sku}</p>
-                                          </td>
-                                          <td className="p-3 text-center font-mono font-bold">{item.qty} bh</td>
-                                          <td className="p-3 text-right font-mono font-medium">{formatBrl(item.price)}</td>
-                                          <td className="p-3 text-right font-mono font-bold text-primary">{formatBrl(item.qty * item.price)}</td>
-                                        </tr>
-                                      ))}
+                                      {order.items?.map((item: any, idx: number) => {
+                                        const matchedProd = products.find(p => p.sku === item.sku || p.codigo === item.sku || p.name === item.name) || {
+                                          sku: item.sku,
+                                          name: item.name,
+                                          category: 'Geral',
+                                          unitPrice: item.price,
+                                          description: item.name,
+                                          inventory: 0,
+                                          avatar: ''
+                                        };
+                                        const prodImage = matchedProd.url_imagem;
+
+                                        return (
+                                          <tr key={idx} className="hover:bg-[#f8faf8] text-[#1a1c19]">
+                                            <td className="p-3">
+                                              <div className="flex items-center gap-2.5">
+                                                <div 
+                                                  className="w-9 h-9 rounded-lg bg-slate-100 border border-[#e1e3e0] overflow-hidden flex items-center justify-center shrink-0 cursor-zoom-in hover:border-primary transition-all group/itemimg"
+                                                  onClick={() => {
+                                                    setZoomModalProduct(matchedProd);
+                                                    setLightboxZoomLevel(1);
+                                                    setLightboxRotation(0);
+                                                  }}
+                                                  title="Clique para ampliar a imagem e ficha do produto"
+                                                >
+                                                  {prodImage && !productImageErrors[matchedProd.sku] ? (
+                                                    /* eslint-disable-next-line @next/next/no-img-element */
+                                                    <img 
+                                                      src={getProductImageSrc(matchedProd.sku, prodImage)}
+                                                      alt={item.name}
+                                                      className="w-full h-full object-contain p-0.5 group-hover/itemimg:scale-125 transition-transform"
+                                                      referrerPolicy="no-referrer"
+                                                      onError={() => handleProductImageError(matchedProd.sku, prodImage)}
+                                                    />
+                                                  ) : (
+                                                    <Package size={14} className="text-slate-400" />
+                                                  )}
+                                                </div>
+                                                <div className="min-w-0">
+                                                  <p className="font-bold truncate">{item.name}</p>
+                                                  <p className="font-mono text-[10px] text-[#747970] mt-0.5">{item.sku}</p>
+                                                </div>
+                                              </div>
+                                            </td>
+                                            <td className="p-3 text-center font-mono font-bold">{item.qty} bh</td>
+                                            <td className="p-3 text-right font-mono font-medium">{formatBrl(item.price)}</td>
+                                            <td className="p-3 text-right font-mono font-bold text-primary">{formatBrl(item.qty * item.price)}</td>
+                                          </tr>
+                                        );
+                                      })}
                                     </tbody>
                                   </table>
                                 </div>
@@ -4122,54 +4230,158 @@ export default function Home() {
       )}
 
       {/* Modal Lightbox de Imagem Ampliada em Alta Resolução */}
-      {zoomModalProduct && zoomModalProduct.url_imagem && (
+      {zoomModalProduct && (
         <div 
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 transition-all"
-          onClick={() => setZoomModalProduct(null)}
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 transition-all animate-in fade-in duration-200"
+          onClick={() => {
+            setZoomModalProduct(null);
+            setLightboxZoomLevel(1);
+            setLightboxRotation(0);
+          }}
         >
           <div 
-            className="bg-white rounded-3xl max-w-xl w-full overflow-hidden shadow-2xl border border-[#e1e3e0] animate-in zoom-in-95 duration-200"
+            className="bg-white rounded-3xl max-w-2xl w-full overflow-hidden shadow-2xl border border-slate-200/80 animate-in zoom-in-95 duration-200 flex flex-col max-h-[92vh]"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Cabeçalho do Modal */}
             <div className="p-4 sm:p-5 border-b border-[#edf0ee] flex items-center justify-between bg-[#f8faf8]">
               <div className="flex items-center gap-3 min-w-0 pr-2">
-                <div className="p-2 bg-primary/10 text-primary rounded-xl shrink-0">
-                  <ZoomIn size={18} />
+                <div className="p-2.5 bg-primary/10 text-primary rounded-xl shrink-0">
+                  <ZoomIn size={20} />
                 </div>
                 <div className="min-w-0">
                   <h4 className="font-bold text-sm sm:text-base text-slate-900 truncate" title={zoomModalProduct.name}>
                     {zoomModalProduct.name}
                   </h4>
-                  <p className="text-[11px] text-[#686e64] font-mono mt-0.5 truncate">
-                    SKU: <span className="font-bold text-slate-800">{zoomModalProduct.codigo || zoomModalProduct.sku}</span> • {zoomModalProduct.marca || zoomModalProduct.fabricante || 'B2BR'}
+                  <p className="text-[11px] text-[#686e64] font-mono mt-0.5 truncate flex items-center gap-1.5 flex-wrap">
+                    <span>SKU: <strong className="font-bold text-slate-800">{zoomModalProduct.codigo || zoomModalProduct.sku}</strong></span>
+                    <span>•</span>
+                    <span>Marca: <strong>{zoomModalProduct.marca || zoomModalProduct.fabricante || 'B2BR'}</strong></span>
+                    {zoomModalProduct.category && (
+                      <>
+                        <span>•</span>
+                        <span className="text-primary font-medium">{zoomModalProduct.category}</span>
+                      </>
+                    )}
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setZoomModalProduct(null)}
-                className="p-2 text-slate-400 hover:text-slate-800 hover:bg-[#eef1ec] rounded-full transition-colors shrink-0"
-                title="Fechar"
-              >
-                <X size={20} />
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {zoomModalProduct.url_imagem && (
+                  <a
+                    href={getProductImageSrc(zoomModalProduct.sku, zoomModalProduct.url_imagem)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors hidden sm:inline-flex"
+                    title="Abrir imagem original em alta resolução em nova aba"
+                  >
+                    <ExternalLink size={18} />
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setZoomModalProduct(null);
+                    setLightboxZoomLevel(1);
+                    setLightboxRotation(0);
+                  }}
+                  className="p-2 text-slate-400 hover:text-slate-800 hover:bg-[#eef1ec] rounded-full transition-colors"
+                  title="Fechar (Esc)"
+                >
+                  <X size={20} />
+                </button>
+              </div>
             </div>
 
-            {/* Imagem Central em Alta Definição */}
-            <div className="p-6 bg-[#f5f7f4] flex items-center justify-center min-h-[300px] sm:min-h-[380px] max-h-[60vh] overflow-hidden group">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={zoomModalProduct.url_imagem}
-                alt={zoomModalProduct.name}
-                className="max-h-[50vh] w-auto max-w-full object-contain transition-transform duration-300 group-hover:scale-125 cursor-zoom-in drop-shadow-sm"
-                referrerPolicy="no-referrer"
-              />
+            {/* Imagem Central com Controles de Zoom Interativos */}
+            <div className="relative bg-[#f1f4f0] flex-1 flex items-center justify-center p-6 min-h-[320px] sm:min-h-[400px] max-h-[55vh] overflow-hidden select-none">
+              {zoomModalProduct.url_imagem && !productImageErrors[zoomModalProduct.sku] ? (
+                <div 
+                  className="w-full h-full flex items-center justify-center cursor-zoom-in transition-all"
+                  onClick={() => {
+                    // Clica na imagem para alternar zoom 1x -> 1.75x -> 2.5x -> 1x
+                    setLightboxZoomLevel(prev => {
+                      if (prev < 1.5) return 1.75;
+                      if (prev < 2.2) return 2.5;
+                      return 1;
+                    });
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={getProductImageSrc(zoomModalProduct.sku, zoomModalProduct.url_imagem)}
+                    alt={zoomModalProduct.name}
+                    style={{
+                      transform: `scale(${lightboxZoomLevel}) rotate(${lightboxRotation}deg)`,
+                      transition: 'transform 0.25s cubic-bezier(0.2, 0, 0, 1)'
+                    }}
+                    className="max-h-[46vh] w-auto max-w-full object-contain drop-shadow-md origin-center"
+                    referrerPolicy="no-referrer"
+                    onError={() => handleProductImageError(zoomModalProduct.sku, zoomModalProduct.url_imagem)}
+                  />
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center gap-3 p-8 text-center text-slate-400">
+                  <div className="w-20 h-20 bg-white/80 rounded-2xl flex items-center justify-center shadow-xs border border-slate-200/80">
+                    <Package size={40} className="text-slate-400 stroke-[1.25]" />
+                  </div>
+                  <div>
+                    <h5 className="font-bold text-slate-700 text-sm">Imagem não vinculada no Omie ERP</h5>
+                    <p className="text-xs text-slate-500 max-w-xs mt-1">
+                      As especificações técnicas e comerciais continuam disponíveis para emissão de pedidos normalmente.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Barra Flutuante de Ferramentas de Zoom */}
+              {zoomModalProduct.url_imagem && !productImageErrors[zoomModalProduct.sku] && (
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-slate-900/85 backdrop-blur-md text-white px-3 py-1.5 rounded-full shadow-lg flex items-center gap-2 border border-slate-700/50 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setLightboxZoomLevel(prev => Math.max(prev - 0.25, 0.75))}
+                    disabled={lightboxZoomLevel <= 0.75}
+                    className="p-1.5 hover:bg-white/20 rounded-full transition-colors disabled:opacity-30"
+                    title="Diminuir Zoom (-)"
+                  >
+                    <ZoomOut size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLightboxZoomLevel(1);
+                      setLightboxRotation(0);
+                    }}
+                    className="px-2 py-0.5 font-mono text-[11px] font-bold hover:bg-white/20 rounded-md transition-colors"
+                    title="Redefinir Zoom (100%)"
+                  >
+                    {Math.round(lightboxZoomLevel * 100)}%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLightboxZoomLevel(prev => Math.min(prev + 0.25, 3.5))}
+                    disabled={lightboxZoomLevel >= 3.5}
+                    className="p-1.5 hover:bg-white/20 rounded-full transition-colors disabled:opacity-30"
+                    title="Aumentar Zoom (+)"
+                  >
+                    <ZoomIn size={15} />
+                  </button>
+                  <div className="w-[1px] h-4 bg-white/20 mx-0.5" />
+                  <button
+                    type="button"
+                    onClick={() => setLightboxRotation(prev => (prev + 90) % 360)}
+                    className="p-1.5 hover:bg-white/20 rounded-full transition-colors"
+                    title="Girar Imagem 90° (R)"
+                  >
+                    <RotateCw size={15} />
+                  </button>
+                </div>
+              )}
             </div>
 
-            {/* Rodapé com Informações Comerciais */}
-            <div className="p-4 sm:p-5 bg-white border-t border-[#edf0ee] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-              <div className="flex flex-wrap gap-2 text-xs">
+            {/* Rodapé com Informações Comerciais e Ficha Técnica */}
+            <div className="p-4 sm:p-5 bg-white border-t border-[#edf0ee] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 overflow-y-auto">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
                 <span className="bg-[#f0f2ee] px-2.5 py-1 rounded-lg font-bold text-slate-700 text-[11px]">
                   Embalagem: {zoomModalProduct.unidade || 'UN'}
                 </span>
@@ -4183,10 +4395,21 @@ export default function Home() {
                     Tabela: {formatBrl(zoomModalProduct.unitPrice)}
                   </span>
                 )}
+                {typeof zoomModalProduct.inventory === 'number' && (
+                  <span className={`px-2.5 py-1 rounded-lg font-mono text-[11px] font-medium ${
+                    zoomModalProduct.inventory > 0 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                  }`}>
+                    Estoque: {zoomModalProduct.inventory} {zoomModalProduct.unidade || 'un'}
+                  </span>
+                )}
               </div>
               <button
                 type="button"
-                onClick={() => setZoomModalProduct(null)}
+                onClick={() => {
+                  setZoomModalProduct(null);
+                  setLightboxZoomLevel(1);
+                  setLightboxRotation(0);
+                }}
                 className="px-5 py-2.5 bg-primary text-white text-xs font-bold rounded-xl hover:bg-opacity-95 transition-all shadow-sm shrink-0"
               >
                 Fechar Visualização

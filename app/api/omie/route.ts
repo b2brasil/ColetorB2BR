@@ -187,6 +187,7 @@ const CACHE_TTL_MS = 20 * 60 * 1000; // 20 minutes TTL
 let cachedContaCorrenteId: number | null = null;
 let cachedCategoryCode: string | null = null;
 let cachedPaymentTerms: { code: string; description: string }[] | null = null;
+let cachedCenariosImpostos: { codigo: number; descricao: string; padrao?: boolean }[] | null = null;
 
 // Robust Rate-Limiting Retry Helper for Omie APIs (especially to solve MISUSE_API_PROCESS / HTTP 500 / 429 / Timeouts)
 const fetchOmieWithRetry = async (url: string, init: RequestInit, maxRetries = 2, delayMs = 300, timeoutMs = 15000): Promise<Response> => {
@@ -273,9 +274,109 @@ const fetchOmieWithRetry = async (url: string, init: RequestInit, maxRetries = 2
   }
 };
 
+export async function fetchOmieCenariosImpostos(
+  appKey: string, 
+  appSecret: string, 
+  forceRefresh = false
+): Promise<{ codigo: number; descricao: string; padrao?: boolean }[]> {
+  if (!forceRefresh && cachedCenariosImpostos && cachedCenariosImpostos.length > 0) {
+    return cachedCenariosImpostos;
+  }
+
+  const endpoints = [
+    'https://app.omie.com.br/api/v1/produtos/cenarios/',
+    'https://app.omie.com.br/api/v1/geral/cenarios/',
+    'https://app.omie.com.br/api/v1/produtos/cenariotributario/',
+    'https://app.omie.com.br/api/v1/vendas/cenarios/'
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const payload = {
+        call: 'ListarCenarios',
+        app_key: appKey.trim().replace(/^["']|["']$/g, ''),
+        app_secret: appSecret.trim().replace(/^["']|["']$/g, ''),
+        param: [{ pagina: 1, registros_por_pagina: 100 }]
+      };
+
+      const res = await fetchOmieWithRetry(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }, 1, 200, 8000);
+
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const list = data.cenarios_cadastro || 
+                     data.cenarios || 
+                     data.lista_cenarios || 
+                     data.cenarios_impostos || 
+                     data.cadastros || 
+                     data.registros || 
+                     [];
+
+        if (Array.isArray(list) && list.length > 0) {
+          const parsed = list.map((item: any) => {
+            const rawCod = item.codigo_cenario || item.ncodigo || item.nCodigo || item.codigo || item.cCodigo || 0;
+            const rawDesc = item.descricao || item.cdescricao || item.cDescricao || item.nome || item.cNome || `Cenário Fiscal ${rawCod}`;
+            const isPadrao = item.padrao === 'S' || item.cpadrao === 'S' || item.cPadrao === 'S';
+            const isInativo = item.inativo === 'S' || item.cinativo === 'S' || item.cInativo === 'S';
+            return {
+              codigo: Number(rawCod),
+              descricao: String(rawDesc).trim(),
+              padrao: isPadrao,
+              inativo: isInativo
+            };
+          }).filter((c: any) => c.codigo > 0 && !c.inativo);
+
+          if (parsed.length > 0) {
+            console.log(`[Omie Cenários de Impostos] Sincronizados com sucesso do endpoint ${endpoint} (${parsed.length} cenários):`, parsed.map(p => `${p.descricao} [${p.codigo}]`).join(', '));
+            cachedCenariosImpostos = parsed;
+            return parsed;
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[Omie Cenários] Consulta no endpoint ${endpoint} não retornou lista:`, e.message);
+    }
+  }
+
+  return [];
+}
+
 export async function GET(req: NextRequest) {
   const routeStartTime = Date.now();
   const action = req.nextUrl.searchParams.get('action');
+
+  if (action === 'cenarios') {
+    const rawAppKey = process.env.OMIE_APP_KEY || '';
+    const rawAppSecret = process.env.OMIE_APP_SECRET || '';
+    const appKey = rawAppKey.trim().replace(/^["']|["']$/g, '');
+    const appSecret = rawAppSecret.trim().replace(/^["']|["']$/g, '');
+    const forceRefresh = req.nextUrl.searchParams.get('refresh') === 'true';
+
+    if (!appKey || !appSecret) {
+      return NextResponse.json({
+        status: 'success',
+        cenarios: [
+          { codigo: 1, descricao: 'Venda Padrão (Simulado)', padrao: true }
+        ]
+      });
+    }
+
+    try {
+      const cenarios = await fetchOmieCenariosImpostos(appKey, appSecret, forceRefresh);
+      return NextResponse.json({
+        status: 'success',
+        cenarios: cenarios.length > 0 ? cenarios : [
+          { codigo: 0, descricao: 'Cenário Fiscal Padrão Omie ERP (Automático)', padrao: true }
+        ]
+      });
+    } catch (e: any) {
+      return NextResponse.json({ status: 'error', message: e.message, cenarios: [] });
+    }
+  }
+
   if (action === 'characteristics') {
     const rawAppKey = process.env.OMIE_APP_KEY || '';
     const rawAppSecret = process.env.OMIE_APP_SECRET || '';
@@ -875,8 +976,15 @@ export async function GET(req: NextRequest) {
   const isConfigured = !!(appKey && appSecret) && !omitRealValue;
 
   if (isConfigured) {
-    const forceRefresh = req.nextUrl.searchParams.get('refresh') === 'true';
-    if (!forceRefresh && omieMemoryCache && (Date.now() - omieMemoryCache.timestamp < CACHE_TTL_MS) && omieMemoryCache.appKey === appKey && omieMemoryCache.appSecret === appSecret) {
+    const forceRefresh = req.nextUrl.searchParams.get('refresh') === 'true' || req.nextUrl.searchParams.get('clearCache') === 'true';
+    if (forceRefresh) {
+      console.log('[Omie Cache] Force refresh requested - invalidating memory and scenario caches');
+      omieMemoryCache = null;
+      cachedContaCorrenteId = null;
+      cachedCategoryCode = null;
+      cachedPaymentTerms = null;
+      cachedCenariosImpostos = null;
+    } else if (omieMemoryCache && (Date.now() - omieMemoryCache.timestamp < CACHE_TTL_MS) && omieMemoryCache.appKey === appKey && omieMemoryCache.appSecret === appSecret) {
       console.log('Returning cached Omie ERP data (TTL valid)');
       return NextResponse.json(omieMemoryCache.responsePayload);
     }
@@ -1265,12 +1373,23 @@ export async function GET(req: NextRequest) {
           : (item.marca || 'Duelo');
 
         // Robust parsing of Omie image URL from different possible schema formats
-        const omieImageUrl = item.url_imagem || 
+        let rawOmieImage = item.url_imagem || 
           (item.imagens && Array.isArray(item.imagens) && item.imagens[0] && (item.imagens[0].url_imagem || item.imagens[0].url_da_imagem || item.imagens[0].caminho_imagem)) ||
           (item.imagens_produto && Array.isArray(item.imagens_produto) && item.imagens_produto[0] && (item.imagens_produto[0].url_imagem || item.imagens_produto[0].url_da_imagem)) ||
+          (item.anexos && Array.isArray(item.anexos) && item.anexos[0] && (item.anexos[0].cUrl || item.anexos[0].url || item.anexos[0].cLink)) ||
           item.caminho_imagem || 
           item.imagem_url || 
+          (typeof item.foto === 'string' ? item.foto : '') ||
           '';
+
+        let omieImageUrl = '';
+        if (rawOmieImage && typeof rawOmieImage === 'string') {
+          let trimmed = rawOmieImage.trim();
+          if (trimmed.startsWith('http://')) {
+            trimmed = trimmed.replace('http://', 'https://');
+          }
+          omieImageUrl = trimmed;
+        }
 
         const trimmedIntegration = String(item.codigo_produto_integracao || '').trim();
         const trimmedCodigo = String(item.codigo || '').trim();
@@ -1321,7 +1440,7 @@ export async function GET(req: NextRequest) {
           unidade: item.unidade || 'UN',
           url_imagem: omieImageUrl,
           fabricante,
-          cfop: item.cfop || '5.102',
+          cfop: item.cfop || '',
           peso_bruto: item.peso_bruto !== undefined && item.peso_bruto !== null ? Number(item.peso_bruto) : 0,
           peso_liq: item.peso_liq !== undefined && item.peso_liq !== null ? Number(item.peso_liq) : 0,
           peso: item.peso_bruto ? Number(item.peso_bruto) : (item.peso_liq ? Number(item.peso_liq) : 0)
@@ -1393,6 +1512,17 @@ export async function GET(req: NextRequest) {
     diagnostics.formasError = formasResult.error || 'Erro ao carregar formas de pagamento.';
   }
 
+  // 4. Cenários de Impostos do Omie ERP
+  let cenariosImpostos: { codigo: number; descricao: string; padrao?: boolean }[] = [];
+  if (isConfigured) {
+    try {
+      const forceRefresh = req.nextUrl.searchParams.get('refresh') === 'true' || req.nextUrl.searchParams.get('clearCache') === 'true';
+      cenariosImpostos = await fetchOmieCenariosImpostos(appKey, appSecret, forceRefresh);
+    } catch (e: any) {
+      console.warn('[Omie Cenários] Error loading tax scenarios during main GET:', e.message);
+    }
+  }
+
   // Final validation, response formulation and caching
   const hasValidExchange = (diagnostics.clientsFetchOk && diagnostics.clientsCount > 0) || 
                            (diagnostics.productsFetchOk && diagnostics.productsCount > 0);
@@ -1424,6 +1554,9 @@ export async function GET(req: NextRequest) {
     clients: clients.length > 0 ? clients : defaultFilteredClients,
     products: products.length > 0 ? products : SEEDED_PRODUCTS,
     paymentTerms,
+    cenariosImpostos: cenariosImpostos.length > 0 ? cenariosImpostos : [
+      { codigo: 0, descricao: 'Cenário Fiscal Padrão Omie ERP (Automático)', padrao: true }
+    ],
     diagnostics
   };
 
@@ -2006,6 +2139,29 @@ export async function POST(req: NextRequest) {
       console.error('[Omie Seller Resolver] Error querying sellers list:', e);
     }
 
+    // Resolving Cenário de Impostos / Fiscal Scenario from Omie ERP - Padrão fixo: "Venda"
+    let resolvedCenarioImpostos: number | undefined = undefined;
+    if (orderData.codigo_cenario_impostos && Number(orderData.codigo_cenario_impostos) > 0) {
+      resolvedCenarioImpostos = Number(orderData.codigo_cenario_impostos);
+    } else {
+      try {
+        const availableCenarios = await fetchOmieCenariosImpostos(appKey, appSecret);
+        // Prioridade 1: Cenário explicitamente com a descrição "Venda" / "Vendas"
+        const vendaCenario = availableCenarios.find(c => c.descricao.trim().toLowerCase() === 'venda') ||
+                             availableCenarios.find(c => c.descricao.trim().toLowerCase().startsWith('venda')) ||
+                             availableCenarios.find(c => c.descricao.trim().toLowerCase().includes('venda'));
+        
+        // Prioridade 2: Cenário padrão configurado no ERP
+        const defaultCenario = vendaCenario || availableCenarios.find(c => c.padrao) || (availableCenarios.length > 0 ? availableCenarios[0] : null);
+        if (defaultCenario) {
+          resolvedCenarioImpostos = defaultCenario.codigo;
+          console.log(`[Omie Tax Scenario] Cenário padrão "Venda" auto-aplicado no pedido: "${defaultCenario.descricao}" (Código: ${resolvedCenarioImpostos})`);
+        }
+      } catch (e) {
+        console.warn('[Omie Tax Scenario] Erro ao resolver cenário padrão "Venda":', e);
+      }
+    }
+
     // Creating a real Omie Sales Order via JSON-RPC
     const omiePayload = {
       call: 'IncluirPedido',
@@ -2020,7 +2176,8 @@ export async function POST(req: NextRequest) {
             codigo_parcela: resolvedCodigoParcela,
             codigo_pedido_integracao: orderNumber,
             numero_pedido: orderNumber,
-            quantidade_itens: orderData.items.length
+            quantidade_itens: orderData.items.length,
+            ...(resolvedCenarioImpostos ? { codigo_cenario_impostos: resolvedCenarioImpostos } : {})
           },
           det: orderData.items.map((item: any, idx: number) => {
             const rawCode = item.codigo_produto || item.codigo || item.sku;
@@ -2037,6 +2194,14 @@ export async function POST(req: NextRequest) {
               ? Number(item.peso_liq)
               : (item.peso_liquido !== undefined && item.peso_liquido !== null && !isNaN(Number(item.peso_liquido)) ? Number(item.peso_liquido) : unitGrossWeight);
 
+            // Importante: NÃO forçar CFOP '5.102' fixo.
+            // Se o item tiver um CFOP específico e customizado que NÃO seja o default legado '5.102', enviamos.
+            // Caso contrário, omitimos o campo 'cfop' no produto, permitindo que o Omie ERP aplique dinamicamente
+            // as alíquotas e o CFOP correto (ex: 5.405 ST, 6.102/6.405 interestadual, etc.) do Cenário de Impostos atualizado!
+            const customCfop = item.cfop && typeof item.cfop === 'string' && item.cfop.trim() !== '' && item.cfop.trim() !== '5.102' && item.cfop.trim() !== '5102'
+              ? item.cfop.trim()
+              : undefined;
+
             return {
               ide: {
                 codigo_item_integracao: `ITEM-${idx + 1}`
@@ -2046,7 +2211,7 @@ export async function POST(req: NextRequest) {
                 peso_liquido: unitNetWeight
               },
               produto: {
-                cfop: item.cfop || '5.102',
+                ...(customCfop ? { cfop: customCfop } : {}),
                 ...(isNumeric 
                   ? { codigo_produto: resolvedCode } 
                   : { codigo_produto_integracao: String(resolvedCode) }
@@ -2068,7 +2233,8 @@ export async function POST(req: NextRequest) {
             codigo_conta_corrente: resolvedContaCorrenteId,
             consumidor_final: "N",
             enviar_email: "N",
-            ...(resolvedVendedorCodigo ? { codVend: Number(resolvedVendedorCodigo) } : {})
+            ...(resolvedVendedorCodigo ? { codVend: Number(resolvedVendedorCodigo) } : {}),
+            ...(resolvedCenarioImpostos ? { codigo_cenario_impostos: resolvedCenarioImpostos } : {})
           },
           observacoes: {
             obs_venda: combinedInstructions || 'Entrega padrão via B2BR Order Collector'
@@ -2126,6 +2292,7 @@ export async function POST(req: NextRequest) {
         omieId: responseData.codigo_pedido || 'OMIE-ID-PENDENTE',
         clientOrderNumber: orderNumber,
         transmittedAt: new Date().toISOString(),
+        cenarioImpostos: resolvedCenarioImpostos,
         details: {
           clientName: orderData.client?.name || 'Cliente Sincronizado',
           totalAmount: orderData.total || 0,
